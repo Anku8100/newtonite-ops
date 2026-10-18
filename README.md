@@ -31,7 +31,7 @@ A full-stack operations dashboard for creating, assigning, tracking, and managin
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/katherin915/newtonite-ops.git
+git clone https://github.com/Anku8100/newtonite-ops.git
 cd newtonite-ops
 ```
 
