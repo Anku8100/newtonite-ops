@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import "./App.css";
 
 const API = "http://localhost:5000/api/work-items";
+const AUTH_API = "http://localhost:5000/api/auth/login";
 
 function displayTask(item) {
   const format = (value) =>
@@ -31,9 +32,76 @@ function App() {
   const [selectedTaskId, setSelectedTaskId] = useState(null);
   const [activities, setActivities] = useState([]);
 
+  const [token, setToken] = useState(
+    () => localStorage.getItem("newtonite_token") || ""
+  );
+
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      return JSON.parse(
+        localStorage.getItem("newtonite_user") || "null"
+      );
+    } catch {
+      return null;
+    }
+  });
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [loginLoading, setLoginLoading] = useState(false);
+
+
+  function authHeaders(extraHeaders = {}) {
+    return {
+      Authorization: `Bearer ${token}`,
+      ...extraHeaders,
+    };
+  }
+  async function handleLogin(event) {
+    event.preventDefault();
+    setLoginError("");
+    setLoginLoading(true);
+
+    try {
+      const response = await fetch(AUTH_API, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email: email.trim(),
+          password,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Login failed");
+      }
+
+      localStorage.setItem("newtonite_token", data.token);
+      localStorage.setItem(
+        "newtonite_user",
+        JSON.stringify(data.user)
+      );
+
+      setCurrentUser(data.user);
+      setToken(data.token);
+      setPassword("");
+    } catch (error) {
+      setLoginError(error.message);
+    } finally {
+      setLoginLoading(false);
+    }
+  }
+
   async function loadTasks() {
     try {
-      const response = await fetch(API);
+      const response = await fetch(API, {
+  headers: authHeaders(),
+});
       if (!response.ok) throw new Error("Could not load tasks");
 
       const data = await response.json();
@@ -46,8 +114,10 @@ function App() {
   }
 
   useEffect(() => {
-    loadTasks();
-  }, []);
+    if (token) {
+      loadTasks();
+    }
+  }, [token]);
 
   const filteredTasks = tasks.filter((task) => {
     const matchesStatus =
@@ -72,7 +142,7 @@ function App() {
     try {
       const response = await fetch(API, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { ...authHeaders(), "Content-Type": "application/json" },
         body: JSON.stringify({
           title: newTitle.trim(),
           priority: newPriority.toUpperCase(),
@@ -102,7 +172,9 @@ async function viewActivity(id) {
     setSelectedTaskId(id);
     setActivities([]);
 
-    const response = await fetch(`${API}/${id}/activity`);
+    const response = await fetch(`${API}/${id}/activity`, {
+      headers: authHeaders(),
+    });
     const data = await response.json();
 
     if (!response.ok) {
@@ -151,6 +223,7 @@ async function claimTask(id) {
   try {
     const response = await fetch(`${API}/${id}/claim`, {
       method: "PATCH",
+      headers: authHeaders(),
     });
 
     const data = await response.json();
@@ -175,14 +248,26 @@ async function claimTask(id) {
 
 
   
+
 async function changeStatus(id, status) {
+  const task = tasks.find((item) => item.id === id);
+
+  if (!task) {
+    setApiMessage("Task not found");
+    return;
+  }
+
   try {
     const response = await fetch(`${API}/${id}/status`, {
       method: "PATCH",
       headers: {
+        ...authHeaders(),
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ status: status.toUpperCase() }),
+      body: JSON.stringify({
+        status: status.toUpperCase(),
+        expectedVersion: task.version,
+      }),
     });
 
     const data = await response.json();
@@ -205,6 +290,71 @@ async function changeStatus(id, status) {
   }
 }
 
+
+if (!token || !currentUser) {
+  return (
+    <main
+      style={{
+        minHeight: "100vh",
+        display: "grid",
+        placeItems: "center",
+        padding: "24px",
+        background: "#f3f5f9",
+      }}
+    >
+      <form
+        onSubmit={handleLogin}
+        style={{
+          width: "100%",
+          maxWidth: "400px",
+          padding: "32px",
+          background: "#ffffff",
+          borderRadius: "16px",
+          boxShadow: "0 8px 32px rgba(0,0,0,0.08)",
+          display: "grid",
+          gap: "16px",
+        }}
+      >
+        <p className="eyebrow">NEWTONITE · OPERATIONS CENTER</p>
+
+        <h1>Welcome back</h1>
+        <p>Sign in to manage your team's operations.</p>
+
+        <label htmlFor="email">Email</label>
+        <input
+          id="email"
+          type="email"
+          value={email}
+          onChange={(event) => setEmail(event.target.value)}
+          placeholder="Enter your email"
+          autoComplete="username"
+          required
+        />
+
+        <label htmlFor="password">Password</label>
+        <input
+          id="password"
+          type="password"
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
+          placeholder="Enter your password"
+          autoComplete="current-password"
+          required
+        />
+
+        {loginError && (
+          <p role="alert" style={{ color: "#c62828" }}>
+            {loginError}
+          </p>
+        )}
+
+        <button type="submit" disabled={loginLoading}>
+          {loginLoading ? "Signing in..." : "Sign in"}
+        </button>
+      </form>
+    </main>
+  );
+}
 
   return (
     <main className="app">
