@@ -2,6 +2,8 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 
+import authRouter from "./routes/auth.js";
+import { authenticateToken } from "./middleware/auth.js";
 import { prisma } from "./db.js";
 import workItemsRouter from "./routes/workItems.js";
 
@@ -12,7 +14,9 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
-app.use("/api/work-items", workItemsRouter);
+app.use("/api/auth", authRouter);
+
+app.use("/api/work-items", authenticateToken, workItemsRouter);
 
 
 const databaseUrl = process.env.DATABASE_URL;

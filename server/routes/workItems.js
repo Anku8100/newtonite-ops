@@ -1,10 +1,20 @@
 
 import { Router } from "express";
 import { prisma } from "../db.js";
+import { authorizeRoles } from "../middleware/auth.js";
 
 const router = Router();
 
+function canAccessWorkItem(user, item) {
+  if (user.role === "ADMIN") {
+    return true;
+  }
 
+  return (
+    user.teamId != null &&
+    item.teamId === user.teamId
+  );
+}
 async function recordActivity(workItemId, action, details) {
   return prisma.activity.create({
     data: {
@@ -16,157 +26,370 @@ async function recordActivity(workItemId, action, details) {
 }
 
 
+
 router.get("/", async (req, res) => {
   try {
+    let where = {};
+
+    // Admin can view all work items
+    if (req.user.role !== "ADMIN") {
+      if (!req.user.teamId) {
+        return res.status(403).json({
+          error: "You are not assigned to a team",
+        });
+      }
+
+      where = {
+        teamId: req.user.teamId,
+      };
+    }
+
     const items = await prisma.workItem.findMany({
-      orderBy: { createdAt: "desc" },
-    });
-    res.json(items);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: "Failed to fetch work items" });
-  }
-});
-
-router.post("/", async (req, res) => {
-  try {
-    const { title, description, priority } = req.body;
-
-    if (!title || typeof title !== "string" || !title.trim()) {
-      return res.status(400).json({ error: "Title is required" });
-    }
-
-    const allowedPriorities = ["URGENT", "HIGH", "MEDIUM", "LOW"];
-    const selectedPriority = (priority || "MEDIUM").toUpperCase();
-
-    if (!allowedPriorities.includes(selectedPriority)) {
-      return res.status(400).json({ error: "Invalid priority" });
-    }
-
-    const item = await prisma.workItem.create({
-      data: {
-        title: title.trim(),
-        description: description || null,
-        priority: selectedPriority,
-        assignee: "Unassigned",
+      where,
+      orderBy: {
+        createdAt: "desc",
       },
     });
-    await recordActivity(item.id, "CREATED", "Work item created");
-    res.status(201).json(item);
+
+    return res.json(items);
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: "Failed to create work item" });
+    console.error("Fetch work items error:", error);
+
+    return res.status(500).json({
+      error: "Failed to fetch work items",
+    });
   }
 });
+
+
+
+router.post(
+  "/",
+  authorizeRoles("ADMIN", "LEAD", "MEMBER"),
+  async (req, res) => {
+    try {
+      const { title, description, priority, teamId } = req.body;
+
+      if (!title || typeof title !== "string" || !title.trim()) {
+        return res.status(400).json({
+          error: "Title is required",
+        });
+      }
+
+      const allowedPriorities = ["URGENT", "HIGH", "MEDIUM", "LOW"];
+      const selectedPriority = (priority || "MEDIUM").toUpperCase();
+
+      if (!allowedPriorities.includes(selectedPriority)) {
+        return res.status(400).json({
+          error: "Invalid priority",
+        });
+      }
+
+      let assignedTeamId = null;
+
+      if (req.user.role === "ADMIN") {
+        if (teamId !== undefined && teamId !== null) {
+          const parsedTeamId = Number(teamId);
+
+          if (!Number.isSafeInteger(parsedTeamId) || parsedTeamId <= 0) {
+            return res.status(400).json({
+              error: "Invalid team ID",
+            });
+          }
+
+          const team = await prisma.team.findUnique({
+            where: { id: parsedTeamId },
+          });
+
+          if (!team) {
+            return res.status(400).json({
+              error: "Team not found",
+            });
+          }
+
+          assignedTeamId = team.id;
+        }
+      } else {
+        if (!req.user.teamId) {
+          return res.status(403).json({
+            error: "You are not assigned to a team",
+          });
+        }
+
+        if (
+          teamId !== undefined &&
+          Number(teamId) !== req.user.teamId
+        ) {
+          return res.status(403).json({
+            error: "You can only create tasks for your own team",
+          });
+        }
+
+        assignedTeamId = req.user.teamId;
+      }
+
+      const item = await prisma.$transaction(async (tx) => {
+        const createdItem = await tx.workItem.create({
+          data: {
+            title: title.trim(),
+            description:
+              typeof description === "string" && description.trim()
+                ? description.trim()
+                : null,
+            priority: selectedPriority,
+            assignee: "Unassigned",
+            teamId: assignedTeamId,
+          },
+        });
+
+        await tx.activity.create({
+          data: {
+            workItemId: createdItem.id,
+            action: "CREATED",
+            details: `Work item created by ${req.user.name}`,
+          },
+        });
+
+        return createdItem;
+      });
+
+      return res.status(201).json(item);
+    } catch (error) {
+      console.error("Create work item error:", error);
+
+      return res.status(500).json({
+        error: "Failed to create work item",
+      });
+    }
+  }
+);
+
 
 // Claim a work item
 
-router.patch("/:id/claim", async (req, res) => {
-  try {
-    const id = Number(req.params.id);
 
-    if (!Number.isInteger(id) || id <= 0) {
-      return res.status(400).json({ error: "Invalid task ID" });
-    }
+router.patch(
+  "/:id/claim",
+  authorizeRoles("ADMIN", "LEAD", "MEMBER"),
+  async (req, res) => {
+    try {
+      const id = Number(req.params.id);
 
-    const claimed = await prisma.$transaction(async (tx) => {
-      const result = await tx.workItem.updateMany({
-        where: {
-          id,
-          assignee: "Unassigned",
-        },
-        data: {
-          assignee: "Anku",
-        },
-      });
-
-      if (result.count === 0) {
-        return null;
+      if (!Number.isInteger(id) || id <= 0) {
+        return res.status(400).json({ error: "Invalid task ID" });
       }
-
-      const item = await tx.workItem.findUnique({
-        where: { id },
-      });
-
-      await tx.activity.create({
-        data: {
-          workItemId: id,
-          action: "CLAIMED",
-          details: "Work item claimed by Anku",
-        },
-      });
-
-      return item;
-    });
-
-    if (!claimed) {
       const existing = await prisma.workItem.findUnique({
         where: { id },
       });
 
       if (!existing) {
-        return res.status(404).json({ error: "Task not found" });
+        return res.status(404).json({
+          error: "Task not found",
+        });
       }
 
-      return res.status(409).json({
-        error: "Task has already been claimed",
+      if (!canAccessWorkItem(req.user, existing)) {
+        return res.status(403).json({
+          error: "You cannot access this team's task",
+        });
+      }
+
+      const claimed = await prisma.$transaction(async (tx) => {
+        const result = await tx.workItem.updateMany({
+          where: {
+            id,
+            assignee: "Unassigned",
+          },
+          data: {
+            assignee: req.user.name,
+            version: { increment: 1 },
+          },
+        });
+
+        if (result.count === 0) {
+          return null;
+        }
+
+        const item = await tx.workItem.findUnique({
+          where: { id },
+        });
+
+        await tx.activity.create({
+          data: {
+            workItemId: id,
+            action: "CLAIMED",
+            details: `Work item claimed by ${req.user.name}`,
+          },
+        });
+
+        return item;
+      });
+
+      if (!claimed) {
+        const existing = await prisma.workItem.findUnique({
+          where: { id },
+        });
+
+        if (!existing) {
+          return res.status(404).json({
+            error: "Task not found",
+          });
+        }
+
+        return res.status(409).json({
+          error: "Task has already been claimed",
+        });
+      }
+
+      return res.json(claimed);
+    } catch (error) {
+      console.error("Claim error:", error);
+
+      return res.status(500).json({
+        error: "Failed to claim task",
       });
     }
-
-    return res.json(claimed);
-  } catch (error) {
-    console.error("Claim error:", error);
-
-    return res.status(500).json({
-      error: "Failed to claim task",
-    });
   }
-});
+);
 
 
 // Update work item status
-router.patch("/:id/status", async (req, res) => {
-  try {
-    const id = Number(req.params.id);
-    const { status } = req.body;
 
-    if (!Number.isInteger(id) || id <= 0) {
-      return res.status(400).json({ error: "Invalid work item ID" });
+
+router.patch(
+  "/:id/status",
+  authorizeRoles("ADMIN", "LEAD", "MEMBER"),
+  async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const { status, expectedVersion } = req.body ?? {};
+
+      if (!Number.isInteger(id) || id <= 0) {
+        return res.status(400).json({ error: "Invalid work item ID" });
+      }
+
+      if (typeof status !== "string") {
+        return res.status(400).json({ error: "Invalid status" });
+      }
+
+      if (
+        !Number.isSafeInteger(expectedVersion) ||
+        expectedVersion < 1
+      ) {
+        return res.status(400).json({
+          error: "A valid expectedVersion is required",
+        });
+      }
+
+      const nextStatus = status.trim().toUpperCase();
+      const allowedStatuses = [
+        "OPEN",
+        "IN PROGRESS",
+        "AWAITING APPROVAL",
+        "RESOLVED",
+        "CLOSED",
+      ];
+
+      if (!allowedStatuses.includes(nextStatus)) {
+        return res.status(400).json({ error: "Invalid status" });
+      }
+
+      const existing = await prisma.workItem.findUnique({
+        where: { id },
+      });
+
+      if (!existing) {
+        return res.status(404).json({ error: "Work item not found" });
+      }
+
+      if (!canAccessWorkItem(req.user, existing)) {
+        return res.status(403).json({
+          error: "You cannot update this team's task",
+        });
+      }
+
+      if (existing.version !== expectedVersion) {
+        return res.status(409).json({
+          error: "Work item has changed. Refresh and try again.",
+          currentVersion: existing.version,
+        });
+      }
+
+      const role = req.user.role;
+
+      if (
+        ["RESOLVED", "CLOSED"].includes(nextStatus) &&
+        !["ADMIN", "LEAD"].includes(role)
+      ) {
+        return res.status(403).json({
+          error: "Only a Lead or Admin can approve or close work items",
+        });
+      }
+
+      const transitions = {
+        OPEN: ["IN PROGRESS"],
+        "IN PROGRESS": ["AWAITING APPROVAL"],
+        "AWAITING APPROVAL": ["RESOLVED"],
+        RESOLVED: ["CLOSED"],
+        CLOSED: [],
+      };
+
+      if (!transitions[existing.status]?.includes(nextStatus)) {
+        return res.status(409).json({
+          error: `Cannot change status from ${existing.status} to ${nextStatus}`,
+        });
+      }
+
+      const result = await prisma.$transaction(async (tx) => {
+        // Atomic check prevents concurrent requests from overwriting
+        // a newer version of the same work item.
+        const update = await tx.workItem.updateMany({
+          where: {
+            id,
+            version: expectedVersion,
+            status: existing.status,
+          },
+          data: {
+            status: nextStatus,
+            version: { increment: 1 },
+          },
+        });
+
+        if (update.count === 0) {
+          return null;
+        }
+
+        const item = await tx.workItem.findUnique({
+          where: { id },
+        });
+
+        await tx.activity.create({
+          data: {
+            workItemId: id,
+            action: "STATUS_CHANGED",
+            details: `Status changed from ${existing.status} to ${nextStatus} by ${req.user.name}`,
+          },
+        });
+
+        return item;
+      });
+
+      if (!result) {
+        return res.status(409).json({
+          error: "Work item has changed. Refresh and try again.",
+        });
+      }
+
+      return res.json(result);
+    } catch (error) {
+      console.error("Status update error:", error);
+      return res.status(500).json({
+        error: "Failed to update status",
+      });
     }
-
-    const allowedStatuses = [
-      "OPEN",
-      "IN PROGRESS",
-      "AWAITING APPROVAL",
-      "RESOLVED",
-      "CLOSED",
-    ];
-
-    if (typeof status !== "string" ||
-        !allowedStatuses.includes(status.toUpperCase())) {
-      return res.status(400).json({ error: "Invalid status" });
-    }
-
-    const item = await prisma.workItem.update({
-      where: { id },
-      data: { status: status.toUpperCase() },
-    });
-    await recordActivity(
-        item.id,
-        "STATUS_CHANGED",
-        `Status changed to ${item.status}`
-    );
-
-    res.json(item);
-  } catch (error) {
-    if (error.code === "P2025") {
-      return res.status(404).json({ error: "Work item not found" });
-    }
-
-    console.error(error);
-    res.status(500).json({ error: "Failed to update status" });
   }
-});
+);
+
 
 router.get("/:id/activity", async (req, res) => {
   try {
@@ -175,7 +398,21 @@ router.get("/:id/activity", async (req, res) => {
     if (!Number.isInteger(workItemId) || workItemId <= 0) {
       return res.status(400).json({ error: "Invalid work item ID" });
     }
+    const item = await prisma.workItem.findUnique({
+      where: { id: workItemId },
+    });
 
+    if (!item) {
+      return res.status(404).json({
+        error: "Work item not found",
+      });
+    }
+
+    if (!canAccessWorkItem(req.user, item)) {
+      return res.status(403).json({
+        error: "You cannot access this team's activity",
+      });
+    }
     const activities = await prisma.activity.findMany({
       where: { workItemId },
       orderBy: { createdAt: "desc" },
@@ -187,7 +424,7 @@ router.get("/:id/activity", async (req, res) => {
     res.status(500).json({ error: "Failed to fetch activity history" });
   }
 });
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", authorizeRoles("ADMIN"), async (req, res) => {
   try {
     const id = Number(req.params.id);
 
@@ -218,4 +455,102 @@ router.delete("/:id", async (req, res) => {
     res.status(500).json({ error: "Failed to delete task" });
   }
 });
+
+
+test("unauthenticated requests cannot access work items", async () => {
+  const response = await fetch(API);
+
+  assert.equal(response.status, 401);
+});
+
+test("Viewer cannot create, claim, update, or delete tasks", async () => {
+  const suffix = `${Date.now()}-${Math.random()}`;
+  let team;
+  let viewer;
+  let item;
+
+  try {
+    team = await prisma.team.create({
+      data: { name: `Viewer Test Team ${suffix}` },
+    });
+
+    viewer = await prisma.user.create({
+      data: {
+        name: `Test Viewer ${suffix}`,
+        email: `viewer-${suffix}@example.com`,
+        role: "VIEWER",
+        teamId: team.id,
+      },
+    });
+
+    item = await prisma.workItem.create({
+      data: {
+        title: `Viewer Test Task ${suffix}`,
+        teamId: team.id,
+      },
+    });
+
+    const viewerToken = jwt.sign(
+      { sub: String(viewer.id) },
+      process.env.JWT_SECRET,
+      { expiresIn: "2h" }
+    );
+
+    const headers = {
+      Authorization: `Bearer ${viewerToken}`,
+      "Content-Type": "application/json",
+    };
+
+    const createResponse = await fetch(API, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ title: "Unauthorized task" }),
+    });
+    assert.equal(createResponse.status, 403);
+
+    const claimResponse = await fetch(`${API}/${item.id}/claim`, {
+      method: "PATCH",
+      headers,
+    });
+    assert.equal(claimResponse.status, 403);
+
+    const statusResponse = await fetch(`${API}/${item.id}/status`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({
+        status: "IN PROGRESS",
+        expectedVersion: item.version,
+      }),
+    });
+    assert.equal(statusResponse.status, 403);
+
+    const deleteResponse = await fetch(`${API}/${item.id}`, {
+      method: "DELETE",
+      headers,
+    });
+    assert.equal(deleteResponse.status, 403);
+  } finally {
+    if (item) {
+      await prisma.activity.deleteMany({
+        where: { workItemId: item.id },
+      });
+      await prisma.workItem.delete({
+        where: { id: item.id },
+      });
+    }
+
+    if (viewer) {
+      await prisma.user.delete({
+        where: { id: viewer.id },
+      });
+    }
+
+    if (team) {
+      await prisma.team.delete({
+        where: { id: team.id },
+      });
+    }
+  }
+});
+
 export default router;

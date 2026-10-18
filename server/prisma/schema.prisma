@@ -1,9 +1,5 @@
 generator client {
-  provider               = "prisma-client"
-  output                 = "../generated/prisma"
-  moduleFormat           = "cjs"
-  generatedFileExtension = "ts"
-  importFileExtension    = "ts"
+  provider = "prisma-client-js"
 }
 
 datasource db {
@@ -11,17 +7,22 @@ datasource db {
 }
 
 model User {
-  id        Int      @id @default(autoincrement())
-  name      String
-  email     String   @unique
-  role      String   @default("MEMBER")
-  createdAt DateTime @default(now())
+  id           Int      @id @default(autoincrement())
+  name         String
+  email        String   @unique
+  passwordHash String?
+  role         String   @default("MEMBER")
+  teamId       Int?
+  team         Team?    @relation(fields: [teamId], references: [id])
+  createdAt    DateTime @default(now())
 }
 
 model Team {
-  id        Int      @id @default(autoincrement())
-  name      String   @unique
-  createdAt DateTime @default(now())
+  id        Int        @id @default(autoincrement())
+  name      String     @unique
+  users     User[]
+  workItems WorkItem[]
+  createdAt DateTime   @default(now())
 }
 
 model WorkItem {
@@ -30,7 +31,10 @@ model WorkItem {
   description String?
   status      String   @default("OPEN")
   priority    String   @default("MEDIUM")
-  assignee String @default("Unassigned")
+  assignee    String   @default("Unassigned")
+  teamId      Int?
+  team        Team?    @relation(fields: [teamId], references: [id])
+  version     Int      @default(1)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }

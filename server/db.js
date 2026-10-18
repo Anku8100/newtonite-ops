@@ -1,8 +1,7 @@
 
 import "dotenv/config";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient } from "./generated/prisma/client.ts";
-
+import { PrismaClient } from "@prisma/client";
 console.log(
   "Database URL loaded:",
   Boolean(process.env.DATABASE_URL)
