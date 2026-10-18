@@ -6,3 +6,6 @@ node_modules/
 dist/
 coverage/
 .DS_Store
+server/.agents/
+server/.claude/
+server/.windsurf/
