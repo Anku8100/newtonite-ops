@@ -4,7 +4,7 @@ A full-stack operational work management dashboard built for the Newtonite Softw
 
 ## 🚀 Live Demo
 
-- **Application:** https://newtonite-ops.onrender.com/
+- **Application:** https://newtonite-ops-xi.vercel.app/
 - **GitHub Repository:** https://github.com/Anku8100/newtonite-ops
 
 ## ✨ Features
